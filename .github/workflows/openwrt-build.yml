@@ -45,17 +45,25 @@ jobs:
     - name: 2.初始化环境
       run: |
         export DEBIAN_FRONTEND=noninteractive
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /etc/rabbitmq /etc/elastic
-        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
-        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
-        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
-        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy-proposed main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
-        sudo sed -i 's/mirrors.tuna.tsinghua.edu.cn/mirrors.aliyun.com/g' /etc/apt/sources.list.d/ubuntukylin.list 2>/dev/null
-        sudo apt-get -qq update
-        sudo apt-get -qq install build-essential git gcc jq python3 flex libncurses5-dev zlib1g-dev
-        sudo apt-get -qq autoremove --purge
-        sudo apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
+        echo "当前系统: $(lsb_release -a 2>/dev/null | grep 'Distributor ID' || cat /etc/os-release | grep 'PRETTY_NAME' | cut -d'=' -f2)"
+        echo "检查 apt 源..."
+        ls /etc/apt/sources.list.d/ 2>/dev/null || echo "无 sources.list.d"
+        cat /etc/apt/sources.list 2>/dev/null | grep -v '^#' || echo "无 sources.list"
+        echo "开始更新 apt..."
+        if ! sudo apt-get -y update; then
+          echo "apt-get update 失败，尝试手动添加源..."
+          sudo rm -f /etc/apt/sources.list.d/*.sources
+          echo "deb http://archive.ubuntu.com/ubuntu/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list
+          echo "deb http://archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb http://archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get -y update
+        fi
+        echo "开始安装构建依赖..."
+        if ! sudo apt-get -y install build-essential git gcc make ninja-build flex bison dateutils ca-certificates wget curl tzdata; then
+          echo "build-essential 安装失败，尝试单独安装..."
+          sudo apt-get -y install make gcc g++
+        fi
+        echo "依赖安装完成"
 
     - name: 3.创建构建目录
       run: |
@@ -100,8 +108,8 @@ jobs:
         cd openwrt
         make defconfig
         make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+        find dl -size -1024c -exec ls -l {} \
+        find dl -size -1024c -exec rm -f {} \
 
     - name: 11.编译固件
       id: compile
