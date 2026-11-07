@@ -1,13 +1,13 @@
 #
 # Build OpenWrt for XiaoYu XY-C5
 #
-# 基于 P3TERX/Actions-OpenWrt 修改
-# 源码: openwrt/openwrt (main 分支, 最新版)
+# 基于 P3TERX/Actions-OpenWrt (openwrt-builder.yml) 修改
+# 源码: openwrt/openwrt (main 分支, 最新版 OpenWrt)
 # 目标: ramips/mt7621 (xiaoyu,xy-c5)
 # 需求: 最新版 OpenWrt + IPv6 + 硬件加速
 # 插件: 全部移除（只保留核心 LuCI + turboacc 硬件 offload）
 #
-# 参考项目: 16+ 仓库/分支 (Hyy2001X, MrH723, Speechless22, P3TERX 等)
+# 参考项目: Hyy2001X, MrH723, Speechless22, P3TERX, coolsnowwolf, yaya131, mufeng05, chenmozhijin 等 16+ 仓库/分支
 #
 
 name: 构建 XiaoYu XY-C5 固件
@@ -30,131 +30,148 @@ on:
 env:
   REPO_URL: https://github.com/openwrt/openwrt
   REPO_BRANCH: main
+  FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: config/xiaoyu_xy-c5.config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: ${{ github.event.inputs.release || 'true' }}
   TZ: Asia/Shanghai
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
     - name: 1.签出代码
-      uses: actions/checkout@v4
+      uses: actions/checkout@main
 
     - name: 2.初始化环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        export DEBIAN_FRONTEND=noninteractive
-        echo "当前系统: $(lsb_release -a 2>/dev/null | grep 'Distributor ID' || cat /etc/os-release | grep 'PRETTY_NAME' | cut -d'=' -f2)"
-        echo "检查 apt 源..."
-        ls /etc/apt/sources.list.d/ 2>/dev/null || echo "无 sources.list.d"
-        cat /etc/apt/sources.list 2>/dev/null | grep -v '^#' || echo "无 sources.list"
-        echo "开始更新 apt..."
-        if ! sudo apt-get -y update; then
-          echo "apt-get update 失败，尝试手动添加源..."
-          sudo rm -f /etc/apt/sources.list.d/*.sources
-          echo "deb http://archive.ubuntu.com/ubuntu/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list
-          echo "deb http://archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb http://archive.ubuntu.com/ubuntu/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          sudo apt-get -y update
-        fi
-        echo "开始安装构建依赖..."
-        if ! sudo apt-get -y install build-essential git gcc make ninja-build flex bison dateutils ca-certificates wget curl tzdata; then
-          echo "build-essential 安装失败，尝试单独安装..."
-          sudo apt-get -y install make gcc g++
-        fi
-        echo "依赖安装完成"
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
 
-    - name: 3.创建构建目录
-      run: |
-        mkdir -p /workdir
-        echo "workdir=$PWD" >> $GITHUB_ENV
-
-    - name: 4.克隆源码
+    - name: 3.克隆源码
+      working-directory: /workdir
       run: |
         df -hT $PWD
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: 5.加载 feeds 配置
+    - name: 4.加载 feeds 配置
       run: |
-        [ -e config/feeds.conf.default ] && cp config/feeds.conf.default openwrt/feeds.conf.default
-        chmod +x diy-part1.sh
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
         cd openwrt
-        [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && $GITHUB_WORKSPACE/diy-part1.sh || echo "无自定义脚本"
+        $GITHUB_WORKSPACE/$DIY_P1_SH
 
-    - name: 6.更新 feeds
+    - name: 5.更新 feeds
       run: cd openwrt && ./scripts/feeds update -a
 
-    - name: 7.安装 feeds
+    - name: 6.安装 feeds
       run: cd openwrt && ./scripts/feeds install -a
 
-    - name: 8.加载配置文件
+    - name: 7.加载配置文件
       run: |
         [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
         cd openwrt
-        [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && $GITHUB_WORKSPACE/diy-part2.sh || echo "无自定义脚本"
+        $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    - name: 9.SSH 连接
+    - name: 8.SSH 连接
       uses: P3TERX/ssh2actions@v1.0.0
       if: (github.event.inputs.ssh == 'true')
       env:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-    - name: 10.下载依赖包
+    - name: 9.下载依赖包
+      id: package
       run: |
         cd openwrt
         make defconfig
         make download -j8
-        find dl -size -1024c -exec ls -l {} \
-        find dl -size -1024c -exec rm -f {} \
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
 
-    - name: 11.编译固件
+    - name: 10.编译固件
       id: compile
       run: |
         cd openwrt
-        echo "$(nproc) 线程编译"
-        make -j$(nproc) || make -j2 || make -j2 V=s
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    - name: 12.检查磁盘空间
+    - name: 11.检查磁盘空间
       if: (!cancelled())
-      run: df -h
+      run: df -hT
+
+    - name: 12.上传 bin 目录
+      uses: actions/upload-artifact@main
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: openwrt/bin
 
     - name: 13.整理文件
       id: organize
-      if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 14.创建 Release 标签
-      id: tag
+    - name: 14.上传固件目录
+      uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: 15.创建 Release 标签
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         touch release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 15.发布固件
+    - name: 16.发布固件到 Release
+      uses: softprops/action-gh-release@master
       if: steps.tag.outputs.status == 'success' && !cancelled()
-      uses: softprops/action-gh-release@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    - name: 16.清理工作流记录
-      uses: GitRML/delete-workflow-runs@main
+    - name: 17.清理工作流记录
+      uses: Mattraks/delete-workflow-runs@main
       with:
-        retain-days: 1
-        keep-minimum-runs: 3
+        retain_days: 0
+        keep_minimum_runs: 2
+
+    - name: 18.删除旧版 Release
+      uses: dev-drprasad/delete-older-releases@master
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 3
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
