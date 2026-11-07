@@ -153,7 +153,7 @@ jobs:
 
     # 清理工作流运行记录
     - name: 清理工作流记录
-      uses: GitRML/delete-workflow-runs@v2
+      uses: GitRML/delete-workflow-runs@main
       with:
-        retain_days: 1
-        keep_minimum_runs: 3
+        retain-days: 1
+        keep-minimum-runs: 3
