@@ -39,6 +39,7 @@
 ## 自动构建
 
 工作流触发条件：
+
 - 手动触发 (`workflow_dispatch`)
 - 发布 (`release:upload`)
 - 定时任务: 每月 1 号凌晨 (`0 0 1 1 *`)
@@ -59,6 +60,7 @@
 ## 参考项目
 
 基于 12+ 个项目的研究：
+
 - [Hyy2001X/AutoBuild-Actions-BETA](https://github.com/Hyy2001X/AutoBuild-Actions-BETA) - 配置文件参考
 - [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt) - Workflow 模板参考
 - [MrH723/Actions-OpenWrt](https://github.com/MrH723/Actions-OpenWrt) - CI 模板参考
