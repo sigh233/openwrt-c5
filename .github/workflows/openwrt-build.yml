@@ -7,6 +7,8 @@
 # 需求: 最新版 OpenWrt + IPv6 + 硬件加速
 # 插件: 全部移除（只保留核心 LuCI + turboacc 硬件 offload）
 #
+# 参考项目: 16+ 仓库/分支 (Hyy2001X, MrH723, Speechless22, P3TERX 等)
+#
 
 name: 构建 XiaoYu XY-C5 固件
 
@@ -37,66 +39,63 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 开始：checkout 代码
-    - name: 签出代码
+    - name: 1.签出代码
       uses: actions/checkout@v4
 
-    # 环境初始化
-    - name: 初始化环境
-      env:
-        DEBIAN_FRONTEND: noninteractive
+    - name: 2.初始化环境
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install build-essential git gcc jq python3 flex libncurses5-dev zlib1g-dev
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
+        export DEBIAN_FRONTEND=noninteractive
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /etc/rabbitmq /etc/elastic
+        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
+        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
+        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
+        echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ jammy-proposed main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu.sources
+        sudo sed -i 's/mirrors.tuna.tsinghua.edu.cn/mirrors.aliyun.com/g' /etc/apt/sources.list.d/ubuntukylin.list 2>/dev/null
+        sudo apt-get -qq update
+        sudo apt-get -qq install build-essential git gcc jq python3 flex libncurses5-dev zlib1g-dev
+        sudo apt-get -qq autoremove --purge
+        sudo apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
 
-    # 下载 OpenWrt 源码
-    - name: 克隆源码
-      working-directory: /workdir
+    - name: 3.创建构建目录
+      run: |
+        mkdir -p /workdir
+        echo "workdir=$PWD" >> $GITHUB_ENV
+
+    - name: 4.克隆源码
       run: |
         df -hT $PWD
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    # 加载自定义 feeds 配置
-    - name: 加载 feeds 配置
+    - name: 5.加载 feeds 配置
       run: |
         [ -e config/feeds.conf.default ] && cp config/feeds.conf.default openwrt/feeds.conf.default
         chmod +x diy-part1.sh
         cd openwrt
         [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && $GITHUB_WORKSPACE/diy-part1.sh || echo "无自定义脚本"
 
-    # 更新 feeds
-    - name: 更新 feeds
+    - name: 6.更新 feeds
       run: cd openwrt && ./scripts/feeds update -a
 
-    # 安装 feeds
-    - name: 安装 feeds
+    - name: 7.安装 feeds
       run: cd openwrt && ./scripts/feeds install -a
 
-    # 加载固件配置
-    - name: 加载配置文件
+    - name: 8.加载配置文件
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
         cd openwrt
         [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && $GITHUB_WORKSPACE/diy-part2.sh || echo "无自定义脚本"
 
-    # SSH 调试（可选）
-    - name: SSH 连接
+    - name: 9.SSH 连接
       uses: P3TERX/ssh2actions@v1.0.0
       if: (github.event.inputs.ssh == 'true')
       env:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-    # 下载依赖包
-    - name: 下载依赖包
+    - name: 10.下载依赖包
       run: |
         cd openwrt
         make defconfig
@@ -104,35 +103,31 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    # 开始编译
-    - name: 编译固件
+    - name: 11.编译固件
       id: compile
       run: |
         cd openwrt
-        echo -e "$(nproc) 线程编译"
+        echo "$(nproc) 线程编译"
         make -j$(nproc) || make -j2 || make -j2 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    # 检查空间
-    - name: 检查磁盘空间
+    - name: 12.检查磁盘空间
       if: (!cancelled())
       run: df -h
 
-    # 整理文件
-    - name: 整理文件
+    - name: 13.整理文件
       id: organize
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    # 上传到 Release
-    - name: 创建 Release 标签
+    - name: 14.创建 Release 标签
       id: tag
       if: steps.organize.outputs.status == 'success' && !cancelled()
       run: |
@@ -140,10 +135,9 @@ jobs:
         touch release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
-    # 发布固件
-    - name: upload-firmware
-      uses: softprops/action-gh-release@v1
+    - name: 15.发布固件
       if: steps.tag.outputs.status == 'success' && !cancelled()
+      uses: softprops/action-gh-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.TOKEN }}
       with:
@@ -151,8 +145,7 @@ jobs:
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    # 清理工作流运行记录
-    - name: 清理工作流记录
+    - name: 16.清理工作流记录
       uses: GitRML/delete-workflow-runs@main
       with:
         retain-days: 1
