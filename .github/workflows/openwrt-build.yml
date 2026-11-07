@@ -1,25 +1,25 @@
 #
 # Build OpenWrt for XiaoYu XY-C5
 #
-# Based on P3TERX/Actions-OpenWrt
-# Source: openwrt/openwrt (main branch, latest release)
-# Target: ramips/mt7621 (xiaoyu,xy-c5)
-# Requirements: Latest OpenWrt + IPv6 + Hardware Offload
-# Plugins: None (only core LuCI + turboacc for hw offload)
+# 基于 P3TERX/Actions-OpenWrt 修改
+# 源码: openwrt/openwrt (main 分支, 最新版)
+# 目标: ramips/mt7621 (xiaoyu,xy-c5)
+# 需求: 最新版 OpenWrt + IPv6 + 硬件加速
+# 插件: 全部移除（只保留核心 LuCI + turboacc 硬件 offload）
 #
 
-name: Build OpenWrt for XiaoYu XY-C5
+name: 构建 XiaoYu XY-C5 固件
 
 on:
   repository_dispatch:
   workflow_dispatch:
     inputs:
       ssh:
-        description: 'SSH connection to Actions'
+        description: 'SSH 连接 Actions'
         required: true
         default: 'false'
       release:
-        description: 'Upload firmware to release'
+        description: '上传固件到 Release'
         required: true
         default: 'true'
   schedule:
@@ -37,57 +37,66 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
+    # 开始：checkout 代码
+    - name: 签出代码
       uses: actions/checkout@v4
 
-    - name: Initialization environment
+    # 环境初始化
+    - name: 初始化环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-2404)
+        sudo -E apt-get -qq install build-essential git gcc jq python3 flex libncurses5-dev zlib1g-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    - name: Clone source code
+    # 下载 OpenWrt 源码
+    - name: 克隆源码
       working-directory: /workdir
       run: |
         df -hT $PWD
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: Load custom feeds
+    # 加载自定义 feeds 配置
+    - name: 加载 feeds 配置
       run: |
         [ -e config/feeds.conf.default ] && cp config/feeds.conf.default openwrt/feeds.conf.default
         chmod +x diy-part1.sh
         cd openwrt
-        [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && $GITHUB_WORKSPACE/diy-part1.sh || echo "no diy script"
+        [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && $GITHUB_WORKSPACE/diy-part1.sh || echo "无自定义脚本"
 
-    - name: Update feeds
+    # 更新 feeds
+    - name: 更新 feeds
       run: cd openwrt && ./scripts/feeds update -a
 
-    - name: Install feeds
+    # 安装 feeds
+    - name: 安装 feeds
       run: cd openwrt && ./scripts/feeds install -a
 
-    - name: Load custom configuration
+    # 加载固件配置
+    - name: 加载配置文件
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
         cd openwrt
-        [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && $GITHUB_WORKSPACE/diy-part2.sh || echo "no diy script"
+        [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && $GITHUB_WORKSPACE/diy-part2.sh || echo "无自定义脚本"
 
-    - name: SSH connection to Actions
+    # SSH 调试（可选）
+    - name: SSH 连接
       uses: P3TERX/ssh2actions@v1.0.0
       if: (github.event.inputs.ssh == 'true')
       env:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-    - name: Download package
+    # 下载依赖包
+    - name: 下载依赖包
       run: |
         cd openwrt
         make defconfig
@@ -95,39 +104,44 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    - name: Compile the firmware
+    # 开始编译
+    - name: 编译固件
       id: compile
       run: |
         cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc)
-        echo "::set-output name=status::success"
+        echo -e "$(nproc) 线程编译"
+        make -j$(nproc) || make -j2 || make -j2 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    - name: Check space usage
+    # 检查空间
+    - name: 检查磁盘空间
       if: (!cancelled())
       run: df -h
 
-    - name: Organize files
+    # 整理文件
+    - name: 整理文件
       id: organize
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
+        echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware to release
+    # 上传到 Release
+    - name: 创建 Release 标签
       id: tag
       if: steps.organize.outputs.status == 'success' && !cancelled()
       run: |
-        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H%M")"
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         touch release.txt
-        echo "::set-output name=status::success"
+        echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware to release
+    # 发布固件
+    - name: upload-firmware
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
       env:
@@ -137,8 +151,9 @@ jobs:
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    - name: Delete workflow runs
-      uses: GitRML/delete-workflow-runs@v3
+    # 清理工作流运行记录
+    - name: 清理工作流记录
+      uses: GitRML/delete-workflow-runs@v2
       with:
         retain_days: 1
         keep_minimum_runs: 3

@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# diy-part2.sh - Custom configuration
-# This script runs after loading the config
-# No extra package modifications needed
+# DIY脚本 2: 执行固件配置后处理
+# 此脚本在加载配置文件之后运行
+# 无需额外修改包列表
 #
 
-echo "No custom packages needed"
+echo "无需额外包修改"
