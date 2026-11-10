@@ -1,83 +1,85 @@
-# 构建 XiaoYu XY-C5 固件
+# 小娱 XY-C5 OpenWrt 精简固件
 
-[![构建 XiaoYu XY-C5](https://github.com/sigh233/openwrt-c5/actions/workflows/openwrt-build.yml/badge.svg)](https://github.com/sigh233/openwrt-c5/actions/workflows/openwrt-build.yml)
+针对 **小娱 XY-C5**（`ramips / mt7621`，设备标识 `xiaoyu_xy-c5`）自动编译精简 OpenWrt 固件。
 
-## 项目说明
+固件产物发布在本仓库的 Releases 中，下载 `*squashfs-sysupgrade.bin` 即可。
 
-本项目提供 GitHub Actions 工作流，用于编译 **XiaoYu XY-C5** (xiaoyu,xy-c5) 的 **OpenWrt 固件**，基于最新版上游代码。
+## 设计目标
 
-## 功能特性
+| 项目 | 说明 |
+| --- | --- |
+| 精简 | 只保留路由器基础功能，不塞入多余插件；包集合 = 官方镜像默认集 + 网页管理 + IPv6 隧道 |
+| 基础功能齐全 | 网络 / 防火墙 / DHCP / DNS / PPPoE / SSH / 网页管理 |
+| IPv6 保留 | `odhcp6c`、`odhcpd-ipv6only`（上游默认）+ `6in4` / `6rd` / `6to4` 隧道 |
+| 硬件加速保留 | `kmod-nft-offload` + `kmod-nf-flow` + `kmod-nf-conntrack-netlink`（MT7621 nftables 流量卸载） |
 
-- **硬件加速**: MT7621 硬件 offload，`kmod-nft-offload` + `firewall4` (自动生成 offload 规则)，MT7530 交换芯片 (DSA)
-- **IPv6 支持**: 完整的 IPv6 功能 (ipv6helper, dnsmasq-dhcpv6, 6in4/6rd/6to4)
-- **精简**: 所有第三方插件已移除，仅保留核心 LuCI
-- **TurboACC**: 硬件 offload + BBR 拥塞控制
-- **基础**: 最新版 OpenWrt (official OpenWrt main 分支)
+## 关键取舍（相对旧版配置的改动）
 
-## 构建配置
+旧版配置存在几处与官方镜像不一致的强制包，本次已全部移除：
 
-配置文件: `config/xiaoyu_xy-c5.config`
+1. **`uboot-envtools`（已删除）**
+   该包会带入 `/etc/board.d/05_fw_defaults`、`/etc/uci-defaults/30_uboot-envtools`、`/usr/sbin/fw_loadenv`，
+   并被 `/lib/preinit/82_config_generate` 在 preinit 极早期调用 `fw_printenv` 读取 U-Boot 环境变量。
+   官方镜像中完全没有这个包。设备经 Breed 刷入时 U-Boot 环境变量布局与原生 U-Boot 不一致，
+   这条早期启动分支属于「官方镜像中不存在」的额外路径。
 
-| 参数 | 值 |
-|------|------|
-| 源码 | openwrt/openwrt `main` 分支 |
-| 目标 | `ramips/mt7621` |
-| 设备 | `xiaoyu,xy-c5` |
-| 内核 | 最新版本 (6.12) |
+2. **`opkg`（已删除）**
+   上游 `main` 已全面切换到 `apk` 包管理器，强制装 `opkg` 会与 `apk-mbedtls` 并存，
+   并额外引入 `/etc/opkg.conf` 与 `/etc/uci-defaults/20_migrate-feeds` 迁移钩子。
 
-## 硬件规格
+3. **`ipv6helper`（已删除）**
+   该包在新版上游已被移除，写了也只会被 `make defconfig` 丢弃。
 
-| 组件 | 规格 |
-|------|------|
-| 处理器 | MT7621A (Ralink) |
-| 内存 | 512MB |
-| 闪存 | 32MB |
-| 以太网 | 5× 1GE (MT7530 交换芯片) |
-| 硬件卸载 | 硬件 (NFT_offload) |
-| WiFi | MT7621 (2.4/5GHz) |
+4. **构建源固定到官方快照同源 commit**
+   官方快照中 `xiaoyu_xy-c5` 镜像可正常启动，对应 `openwrt/openwrt` commit
+   `dd72c4c198330e208c2357625693a03996cae741`。工作流默认检出该 commit，
+   使产物与已验证可启动的官方镜像同源（拉取失败时自动回退 `main` 并打印实际 commit）。
 
-## 自动构建
+5. **构建权限（上游已知问题 #9545）**
+   上游构建对源码树 unix 权限敏感，`umask` 不是 `0022 / 0002` 时会「编译成功但设备启动挂死」。
+   工作流每个构建步骤都显式 `umask 0022`。
 
-工作流触发条件：
+## 仓库结构
 
-- 手动触发 (`workflow_dispatch`)
-- 发布 (`release:upload`)
-- 定时任务: 每月 1 号凌晨 (`0 0 1 1 *`)
+```
+.github/workflows/build.yml      GitHub Actions 构建流程
+config/xiaoyu_xy-c5.config       精简配置（只写增量，其余由 make defconfig 按上游默认补全）
+```
 
-## 手动触发
+> 刻意不再使用 `diy-part1.sh` / `diy-part2.sh`：它们原本只是 `echo`，不产生任何实际改动，
+> 保留只会让人误以为构建过程有额外定制。
 
-请访问 [Actions 标签页](https://github.com/sigh233/openwrt-c5/actions) → **Run workflow** → **Run workflow** 按钮。
+## 构建流程
 
-## 文件说明
+`workflow_dispatch` 手动触发，或在 `config/**`、`.github/workflows/build.yml` 变更时自动触发。
 
-| 文件 | 说明 |
-|------|------|
-| `config/xiaoyu_xy-c5.config` | OpenWrt 构建配置文件 |
-| `.github/workflows/openwrt-build.yml` | GitHub Actions 工作流文件 |
-| `diy-part1.sh` / `diy-part2.sh` | 自定义脚本 (当前为空) |
-| `README.md` | 项目说明文档 |
+1. 安装构建依赖、释放磁盘空间
+2. 签出本仓库
+3. 克隆上游 `openwrt/openwrt`（优先固定 commit，失败回退 `main`）
+4. `./scripts/feeds update -a` + `install -a`
+5. 载入 `config/xiaoyu_xy-c5.config` 并 `make defconfig`
+6. **配置自检**：关键包必须存在；`uboot-envtools` / `opkg` 出现即失败
+7. `make download -j$(nproc)`
+8. `make -j$(nproc)`（失败降级 `-j1`、`-j1 V=s`）
+9. **产物自检**：`.manifest` 关键包齐全、禁止包缺席；解包 rootfs 确认无 `fw_loadenv` /
+   `30_uboot-envtools` / `05_fw_defaults` 早期启动钩子
+10. `gh release create` 发布全部产物（含 `config.buildinfo`、`profiles.json`、`sha256sums`）
+11. 仅保留最近 3 个 Release
 
-## 参考项目
+## 刷机
 
-满足用户"参考10个以上分支"的要求，以下 **16 个** 仓库/分支被研究并用于构建本项目的配置和工作流：
+产物为 `openwrt-ramips-mt7621-xiaoyu_xy-c5-squashfs-sysupgrade.bin`，用 Breed 的「固件更新」直接刷入即可。
 
-| # | 仓库 | 参考分支/文件 | 用途 |
-|---|------|-------------|------|
-| 1 | [Hyy2001X/AutoBuild-Actions-BETA](https://github.com/Hyy2001X/AutoBuild-Actions-BETA) | `Configs/xiaoyu_xy-c5` | 配置文件参考 |
-| 2 | [MrH723/Actions-OpenWrt](https://github.com/MrH723/Actions-OpenWrt) | `xiaoyu_xy-c5.yml` | 目标配置参考 |
-| 3 | [Speechless22/Actions-OpenWrt](https://github.com/Speechless22/Actions-OpenWrt) | `build-openwrt.yml` | 工作流模板参考 |
-| 4 | [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt) | `diy-part1.sh`, `diy-part2.sh`, 标准 yml | Workflow 模板参考 |
-| 5 | [openwrt/openwrt](https://github.com/openwrt/openwrt) | `main` 分支 | 最新源码 + 硬件 `.dts` |
-| 6 | [openwrt/openwrt](https://github.com/openwrt/openwrt) | `target/linux/ramips/dts/mt7621_xiaoyu_xy-c5.dts` | 硬件定义参考 |
-| 7 | [coolsnowwolf/lede](https://github.com/coolsnowwolf/lede) | `main` 分支 | 包依赖参考 |
-| 8 | [mufeng05/turboacc](https://github.com/mufeng05/turboacc) | `main` 分支 | 硬件 offload 配置参考 |
-| 9 | [chenmozhijin/turboacc](https://github.com/chenmozhijin/turboacc) | `main` 分支 | 硬件 offload 配置参考 |
-| 10 | [barry-ran/build-lede](https://github.com/barry-ran/build-lede) | `build-lede` 分支 | 编译脚本参考 |
-| 11 | [Siriling](https://github.com/Siriling) | `x86-x64-full.yml` | 工作流参考 |
-| 12 | [yaya131/OpenWrt_R7800_Stable](https://github.com/yaya131/OpenWrt_R7800_Stable) | `Stable` 分支 | 稳定版构建参考 |
-| 13 | [openwrt/openwrt](https://github.com/openwrt/openwrt) | `package/feeds/luci/turboacc` | TurboACC 包路径参考 |
-| 14 | [openwrt/openwrt](https://github.com/openwrt/openwrt) | `menuconfig` 选项参考 | `CONFIG_PACKAGE_luci-app-turboacc_INCLUDE_OFFLOADING` |
-| 15 | [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt) | `template.yml` | 完整工作流结构参考 |
-| 16 | [Hyy2001X/AutoBuild-Actions-BETA](https://github.com/Hyy2001X/AutoBuild-Actions-BETA) | `RecoveryMode` | 恢复模式参考 |
+- 跨固件切换时建议不保留配置。
+- `*initramfs-kernel.bin` 为内存运行镜像，可用于临时验证，不写入 Flash。
 
-> **研究总结**: 以上 16 个参考项目/分支涵盖了配置文件、工作流模板、硬件 offload (turboacc)、IPv6 支持、编译脚本等关键方面，为本项目提供了完整的构建依据。
+## 如何增删功能包
+
+编辑 `config/xiaoyu_xy-c5.config`，加一行：
+
+```
+CONFIG_PACKAGE_包名=y
+```
+
+不必手工补全依赖，`make defconfig` 会处理。但**不要**加入 `uboot-envtools` 与 `opkg`
+（工作流第 6 步会直接失败拦截）。
