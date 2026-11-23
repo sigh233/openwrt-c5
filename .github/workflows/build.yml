@@ -11,7 +11,8 @@ on:
 env:
   TZ: Asia/Shanghai
   UPSTREAM_REPO: https://github.com/openwrt/openwrt
-  UPSTREAM_SHA: dd72c4c198330e208c2357625693a03996cae741
+  UPSTREAM_TAG: v25.12.6
+  UPSTREAM_SHA: 64900e756efa667774214f9c6b17c113222e01f7
   CONFIG_FILE: config/xiaoyu_xy-c5.config
 
 jobs:
@@ -33,20 +34,23 @@ jobs:
       - name: 2. 签出本仓库
         uses: actions/checkout@v4
 
-      - name: 3. 克隆上游源码（优先固定 commit，失败回退 main）
+      - name: 3. 克隆上游源码（固定到稳定分支 tag，拉取失败即中止）
         run: |
           umask 0022
           mkdir -p openwrt && cd openwrt
           git init -q
           git remote add origin "$UPSTREAM_REPO"
-          git fetch -q --depth 1 origin main
-          git checkout -q FETCH_HEAD
-          if git fetch -q --depth 1 origin "$UPSTREAM_SHA"; then
-            git checkout -q FETCH_HEAD
-            echo "已切换到固定 commit $UPSTREAM_SHA"
-          else
-            echo "固定 commit 拉取失败，保留 main 最新"
+          if ! git fetch -q --depth 1 origin "refs/tags/${UPSTREAM_TAG}"; then
+            echo "::error::无法拉取上游 tag ${UPSTREAM_TAG}"
+            exit 1
           fi
+          git checkout -q FETCH_HEAD
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$UPSTREAM_SHA" ]; then
+            echo "::error::上游 commit 不符：期望 ${UPSTREAM_SHA}，实际 ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "已切换到 ${UPSTREAM_TAG} (${UPSTREAM_SHA})"
           git log -1 --format='HEAD %H %cd %s'
 
       - name: 4. 更新并安装 feeds
