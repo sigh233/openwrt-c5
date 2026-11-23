@@ -24,16 +24,17 @@
    这条早期启动分支属于「官方镜像中不存在」的额外路径。
 
 2. **`opkg`（已删除）**
-   上游 `main` 已全面切换到 `apk` 包管理器，强制装 `opkg` 会与 `apk-mbedtls` 并存，
+   新版上游已全面切换到 `apk` 包管理器，强制装 `opkg` 会与 `apk-mbedtls` 并存，
    并额外引入 `/etc/opkg.conf` 与 `/etc/uci-defaults/20_migrate-feeds` 迁移钩子。
 
 3. **`ipv6helper`（已删除）**
    该包在新版上游已被移除，写了也只会被 `make defconfig` 丢弃。
 
-4. **构建源固定到官方快照同源 commit**
-   官方快照中 `xiaoyu_xy-c5` 镜像可正常启动，对应 `openwrt/openwrt` commit
-   `dd72c4c198330e208c2357625693a03996cae741`。工作流默认检出该 commit，
-   使产物与已验证可启动的官方镜像同源（拉取失败时自动回退 `main` 并打印实际 commit）。
+4. **构建源固定到官方稳定 tag（不是 `main`）**
+   官方 **v25.12.6** 稳定版镜像在 Breed 下可正常启动。工作流固定检出该 tag
+   （commit `64900e756efa667774214f9c6b17c113222e01f7`），按 `refs/tags/v25.12.6`
+   拉取，并强校验 `HEAD` 与预期 SHA 一致；**拉取失败直接中止，不再回退 `main`**。
+   为什么必须放弃 `main`，见下方「踩坑记录」。
 
 5. **构建权限（上游已知问题 #9545）**
    上游构建对源码树 unix 权限敏感，`umask` 不是 `0022 / 0002` 时会「编译成功但设备启动挂死」。
@@ -55,7 +56,8 @@ config/xiaoyu_xy-c5.config       精简配置（只写增量，其余由 make de
 
 1. 安装构建依赖、释放磁盘空间
 2. 签出本仓库
-3. 克隆上游 `openwrt/openwrt`（优先固定 commit，失败回退 `main`）
+3. 克隆上游 `openwrt/openwrt`：`git fetch --depth 1 origin refs/tags/v25.12.6`，
+   校验 `HEAD` 等于预期 SHA，不符即失败退出
 4. `./scripts/feeds update -a` + `install -a`
 5. 载入 `config/xiaoyu_xy-c5.config` 并 `make defconfig`
 6. **配置自检**：关键包必须存在；`uboot-envtools` / `opkg` 出现即失败
@@ -72,6 +74,65 @@ config/xiaoyu_xy-c5.config       精简配置（只写增量，其余由 make de
 
 - 跨固件切换时建议不保留配置。
 - `*initramfs-kernel.bin` 为内存运行镜像，可用于临时验证，不写入 Flash。
+
+## 踩坑记录：`main` 分支固件刷入后不启动
+
+### 现象
+
+用 Breed 刷入本仓库编译的 `sysupgrade.bin` 后：
+
+- **网口灯亮**，**sys 灯不亮**，拿不到 IP，无法判断是否引导
+- 断电重启、长按复位键，**Breed 仍能进入**
+- 硬件未做过任何改动
+- 同一台机器刷**官方 v25.12.6 稳定版** `sysupgrade.bin` 可以正常启动
+
+### 为什么 sys 灯不亮是关键线索
+
+`sys` 灯由内核加载后的 LED 驱动点亮。它不亮 = 内核没有跑起来（连 preinit 都没到），
+不是某个软件包在启动早期报错。若真是 `uboot-envtools` 那类问题，内核是能起来的，
+表现应为「灯有反应、偶尔能 ping 通、或反复重启」，而不是完全静默。
+
+### 排查过程
+
+| 步骤 | 检查内容 | 结果 |
+| --- | --- | --- |
+| 1 | 产物是否正常生成 | Run #2 全绿，`sysupgrade.bin` 7.1 MB，132 个包齐全 |
+| 2 | 是否被 `uboot-envtools` 拖累 | 已删除该包，产物自检确认无早期启动钩子——排除 |
+| 3 | `.config` 是否改动了内核参数 | `config.buildinfo` 共 39 行**全是 `CONFIG_PACKAGE_*`**，无任何 `CONFIG_KERNEL_*` / `CONFIG_TARGET_KERNEL_PARTSIZE` / `CONFIG_TARGET_ROOTFS_*`，即内核压缩方式、加载地址、分区大小全部沿用上游默认——排除 |
+| 4 | 内核版本对照 | 自编固件 `main@dd72c4c` = **6.18.60**；官方稳定版 `v25.12.6` = **6.12.112** |
+
+### 根因
+
+上游 `main` 分支在此期间已从 6.12 跨到 **6.18**，处于新内核的开发期。
+这一代切换中 `ramips/mt7621` 的 `sysupgrade` 引导方式发生了变动，**Breed 不认**，
+因此内核根本无法被加载。
+
+配置本身没有问题：`config.buildinfo` 里一个内核参数都没改，所有差异都来自上游分支的选择。
+
+### 修复
+
+1. `UPSTREAM_TAG` 新增为 `v25.12.6`，`UPSTREAM_SHA` 指向其 commit `64900e7`
+2. 克隆方式由 `git fetch origin main` 改为 `git fetch origin refs/tags/v25.12.6`
+3. 增加 `HEAD` 与预期 SHA 的强校验，不符即报错退出
+4. **删除「失败回退 `main`」逻辑** —— 这是最关键的一条。旧逻辑在固定 commit
+   拉取失败时会静默回退到 `main` 最新，等于又编出一个 6.18 的固件，白忙一场。
+   现在宁可构建失败，也不产出引导不了的镜像。
+
+### 如何验证这次修复是否生效
+
+构建日志里应能看到：
+
+```
+已切换到 v25.12.6 (64900e756efa667774214f9c6b17c113222e01f7)
+```
+
+产物自检的包版本中，内核应为 **`6.12.x-r1`**（不再是 `6.18.x-r1`）。
+刷入后 `sys` 灯应正常点亮。
+
+### 后续升级原则
+
+不要直接跟随 `main`。需要升级时，先确认真实设备上**官方稳定版镜像能正常启动**，
+再用该稳定版对应的 tag 作为 `UPSTREAM_SHA`，并在日志中核对内核版本与产物。
 
 ## 如何增删功能包
 
